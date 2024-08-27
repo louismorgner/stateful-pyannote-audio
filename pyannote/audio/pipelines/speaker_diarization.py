@@ -126,6 +126,7 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
     ):
         super().__init__()
 
+        print("initializing pipeline")
         self.segmentation_model = segmentation
         model: Model = get_model(segmentation, use_auth_token=use_auth_token)
 
@@ -466,6 +467,7 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
             Only returned when `return_embeddings` is True.
         """
 
+        print("starting apply")
         # setup hook (e.g. for debugging purposes)
         hook = self.setup_hook(file, hook=hook)
 
@@ -647,3 +649,90 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
 
     def get_metric(self) -> GreedyDiarizationErrorRate:
         return GreedyDiarizationErrorRate(**self.der_variant)
+
+    def process_chunk(self, file: AudioFile):
+        print("Processing chunk")
+        
+        file = Audio.validate_file(file)
+        
+        segmentations = self.get_segmentations(file)
+        
+        if self._segmentation.model.specifications.powerset:
+            binarized_segmentations = segmentations
+        else:
+            binarized_segmentations = binarize(
+                segmentations,
+                onset=self.segmentation.threshold,
+                initial_state=False,
+            )
+        
+        embeddings = self.get_embeddings(
+            file,
+            binarized_segmentations,
+            exclude_overlap=self.embedding_exclude_overlap,
+        )
+        
+        count = self.speaker_count(
+            binarized_segmentations,
+            self._segmentation.model.receptive_field,
+            warm_up=(0.0, 0.0),
+        )
+        
+        return {
+            "segmentations": segmentations,
+            "binarized_segmentations": binarized_segmentations,
+            "embeddings": embeddings,
+            "count": count,
+            "file": file  # Include the file object for later use
+        }
+
+    def global_diarization(self, chunk_results, num_speakers=None, min_speakers=None, max_speakers=None):
+        print("Performing global diarization")
+
+        # Combine results from all chunks
+        all_embeddings = np.vstack([chunk['embeddings'] for chunk in chunk_results])
+        all_segmentations = np.vstack([chunk['segmentations'].data for chunk in chunk_results])
+        
+        # Perform clustering
+        num_speakers, min_speakers, max_speakers = self.set_num_speakers(
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+
+        hard_clusters, _, centroids = self.clustering(
+            embeddings=all_embeddings,
+            segmentations=SlidingWindowFeature(all_segmentations, chunk_results[0]['segmentations'].sliding_window),
+            num_clusters=num_speakers,
+            min_clusters=min_speakers,
+            max_clusters=max_speakers,
+        )
+
+        # Reconstruct diarization
+        count = SlidingWindowFeature(
+            np.vstack([chunk['count'].data for chunk in chunk_results]),
+            chunk_results[0]['count'].sliding_window
+        )
+
+        discrete_diarization = self.reconstruct(
+            SlidingWindowFeature(all_segmentations, chunk_results[0]['segmentations'].sliding_window),
+            hard_clusters,
+            count,
+        )
+
+        # Convert to continuous diarization
+        diarization = self.to_annotation(
+            discrete_diarization,
+            min_duration_on=0.0,
+            min_duration_off=self.segmentation.min_duration_off,
+        )
+        diarization.uri = chunk_results[0]['file']["uri"]
+
+        # Map speakers to labels
+        mapping = {
+            label: expected_label
+            for label, expected_label in zip(diarization.labels(), self.classes())
+        }
+        diarization = diarization.rename_labels(mapping=mapping)
+
+        return diarization, centroids
