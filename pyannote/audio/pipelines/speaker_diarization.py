@@ -686,13 +686,46 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
         # keep track of inactive speakers
         inactive_speakers = np.sum(binarized_segmentations.data, axis=1) == 0
         
+        # Perform local clustering for this chunk
+        local_hard_clusters, _, local_centroids = self.clustering(
+            embeddings=embeddings,
+            segmentations=binarized_segmentations,
+            num_clusters=None,  # Let the clustering algorithm decide
+            min_clusters=1,
+            max_clusters=10,  # You can adjust this value as needed
+        )
+        
+        # Reconstruct local diarization
+        local_discrete_diarization = self.reconstruct(
+            segmentations,
+            local_hard_clusters,
+            count,
+        )
+        
+        # Convert to continuous diarization
+        local_diarization = self.to_annotation(
+            local_discrete_diarization,
+            min_duration_on=0.0,
+            min_duration_off=self.segmentation.min_duration_off,
+        )
+        local_diarization.uri = file["uri"]
+        
+        # Map local speakers to labels
+        local_mapping = {
+            label: f"LOCAL_SPEAKER_{label:02d}"
+            for label in local_diarization.labels()
+        }
+        local_diarization = local_diarization.rename_labels(mapping=local_mapping)
+        
         return {
             "segmentations": segmentations,
             "binarized_segmentations": binarized_segmentations,
             "embeddings": embeddings,
             "count": count,
             "inactive_speakers": inactive_speakers,
-            "file": file  # Include the file object for later use
+            "file": file,  # Include the file object for later use
+            "local_diarization": local_diarization,  # Add local diarization results
+            "local_centroids": local_centroids  # Add local centroids
         }
 
     def global_diarization(self, chunk_results, num_speakers=None, min_speakers=None, max_speakers=None):

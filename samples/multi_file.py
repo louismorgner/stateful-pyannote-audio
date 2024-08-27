@@ -9,6 +9,12 @@ pipeline = Pipeline.from_pretrained(
 chunk_files = ["./chunk3_extra.wav"]
 chunk_results = [pipeline.process_chunk(file) for file in chunk_files]
 
+# Access local diarization for each chunk
+for i, chunk_result in enumerate(chunk_results):
+    if chunk_result is not None:
+        print(f"Local diarization for chunk {i}:")
+        print(chunk_result['local_diarization'])
+
 # Perform global diarization
 diarization, centroids = pipeline.global_diarization(chunk_results)
 
