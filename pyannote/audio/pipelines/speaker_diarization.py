@@ -717,6 +717,9 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
         }
         local_diarization = local_diarization.rename_labels(mapping=local_mapping)
         
+        # Detect overlapping speech
+        overlapping_speech = self.detect_overlapping_speech(count)
+        
         return {
             "segmentations": segmentations,
             "binarized_segmentations": binarized_segmentations,
@@ -725,8 +728,34 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
             "inactive_speakers": inactive_speakers,
             "file": file,  # Include the file object for later use
             "local_diarization": local_diarization,  # Add local diarization results
-            "local_centroids": local_centroids  # Add local centroids
+            "local_centroids": local_centroids,  # Add local centroids
+            "overlapping_speech": overlapping_speech  # Add overlapping speech information
         }
+
+    def detect_overlapping_speech(self, count: SlidingWindowFeature):
+        """Detect frames with overlapping speech"""
+        overlapping_frames = count.data > 1
+        overlapping_regions = []
+        
+        if np.any(overlapping_frames):
+            start_frame = None
+            for i, is_overlapping in enumerate(overlapping_frames):
+                if is_overlapping and start_frame is None:
+                    start_frame = i
+                elif not is_overlapping and start_frame is not None:
+                    overlapping_regions.append((
+                        count.sliding_window[start_frame].start,
+                        count.sliding_window[i-1].end
+                    ))
+                    start_frame = None
+            
+            if start_frame is not None:
+                overlapping_regions.append((
+                    count.sliding_window[start_frame].start,
+                    count.sliding_window[-1].end
+                ))
+        
+        return overlapping_regions
 
     def global_diarization(self, chunk_results, num_speakers=None, min_speakers=None, max_speakers=None):
         print("Performing global diarization")
