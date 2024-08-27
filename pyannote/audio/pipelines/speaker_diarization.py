@@ -32,7 +32,7 @@ from typing import Callable, Optional, Text, Union
 import numpy as np
 import torch
 from einops import rearrange
-from pyannote.core import Annotation, SlidingWindowFeature
+from pyannote.core import Annotation, SlidingWindowFeature, Segment
 from pyannote.metrics.diarization import GreedyDiarizationErrorRate
 from pyannote.pipeline.parameter import ParamDict, Uniform
 
@@ -757,65 +757,61 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
         
         return overlapping_regions
 
-    def global_diarization(self, chunk_results, num_speakers=None, min_speakers=None, max_speakers=None):
+    def global_diarization(
+        self,
+        chunk_results,
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+    ):
         print("Performing global diarization")
 
-        # Log local speaker segmentation results
-        print("Local speaker segmentation results:")
-        for i, chunk in enumerate(chunk_results):
-            if chunk is not None:
-                print(f"\nChunk {i}:")
-                for turn, _, speaker in chunk['local_diarization'].itertracks(yield_label=True):
-                    print(f"  start={turn.start:.1f}s stop={turn.end:.1f}s {speaker}")
-
-        # Combine results from all chunks
-        all_embeddings = np.vstack([chunk['embeddings'] for chunk in chunk_results if chunk is not None])
-        all_segmentations = np.vstack([chunk['segmentations'].data for chunk in chunk_results if chunk is not None])
-        
-        # Perform clustering
+        # Set up speaker count constraints
         num_speakers, min_speakers, max_speakers = self.set_num_speakers(
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
         )
 
+        # Combine embeddings and segmentations from all chunks
+        all_embeddings = np.vstack([chunk['embeddings'] for chunk in chunk_results if chunk is not None])
+        all_segmentations = np.vstack([chunk['binarized_segmentations'].data for chunk in chunk_results if chunk is not None])
+        
+        # Create a SlidingWindowFeature for all_segmentations
+        segmentations = SlidingWindowFeature(
+            all_segmentations,
+            chunk_results[0]['binarized_segmentations'].sliding_window
+        )
+
+        # Perform global clustering
         hard_clusters, _, centroids = self.clustering(
             embeddings=all_embeddings,
-            segmentations=SlidingWindowFeature(all_segmentations, chunk_results[0]['segmentations'].sliding_window),
+            segmentations=segmentations,
             num_clusters=num_speakers,
             min_clusters=min_speakers,
             max_clusters=max_speakers,
         )
 
-        # number of detected clusters is the number of different speakers
+        # Check if the number of detected speakers is within bounds
         num_different_speakers = np.max(hard_clusters) + 1
-
-        # detected number of speakers can still be out of bounds
-        if (num_different_speakers < min_speakers or num_different_speakers > max_speakers):
+        if num_different_speakers < min_speakers or num_different_speakers > max_speakers:
             warnings.warn(
-                textwrap.dedent(
-                    f"""
-                    The detected number of speakers ({num_different_speakers}) is outside
-                    the given bounds [{min_speakers}, {max_speakers}]. This can happen if the
-                    given audio file is too short to contain {min_speakers} or more speakers.
-                    Try to lower the desired minimal number of speakers.
-                    """
-                )
+                f"The detected number of speakers ({num_different_speakers}) is outside "
+                f"the given bounds [{min_speakers}, {max_speakers}]."
             )
 
-        # Reconstruct diarization
+        # Combine speaker counts from all chunks
         count = SlidingWindowFeature(
             np.vstack([chunk['count'].data for chunk in chunk_results if chunk is not None]),
             chunk_results[0]['count'].sliding_window
         )
 
-        # during counting, we could possibly overcount the number of instantaneous
-        # speakers due to segmentation errors, so we cap the maximum instantaneous number
-        # of speakers by the `max_speakers` value
+        # Cap the maximum instantaneous number of speakers
         count.data = np.minimum(count.data, max_speakers).astype(np.int8)
 
+        # Reconstruct discrete diarization
         discrete_diarization = self.reconstruct(
-            SlidingWindowFeature(all_segmentations, chunk_results[0]['segmentations'].sliding_window),
+            segmentations,
             hard_clusters,
             count,
         )
