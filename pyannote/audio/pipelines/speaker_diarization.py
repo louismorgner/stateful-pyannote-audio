@@ -115,7 +115,7 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
     def __init__(
         self,
         segmentation: PipelineModel = "pyannote/segmentation@2022.07",
-        segmentation_step: float = 0.1,
+        segmentation_step: float = 0.1,  # You could change this default value
         embedding: PipelineModel = "speechbrain/spkrec-ecapa-voxceleb@5c0be3875fda05e81f3c004ed8c7c06be308de1e",
         embedding_exclude_overlap: bool = False,
         clustering: str = "AgglomerativeClustering",

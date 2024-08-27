@@ -4,7 +4,7 @@ pipeline = Pipeline.from_pretrained(
     use_auth_token="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")
 
 # apply pretrained pipeline
-diarization = pipeline("./chunk1.wav")
+diarization = pipeline("./chunk3_extra.wav")
 
 # print the result
 for turn, _, speaker in diarization.itertracks(yield_label=True):
