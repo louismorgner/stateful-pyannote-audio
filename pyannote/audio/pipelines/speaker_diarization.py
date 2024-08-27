@@ -731,6 +731,14 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
     def global_diarization(self, chunk_results, num_speakers=None, min_speakers=None, max_speakers=None):
         print("Performing global diarization")
 
+        # Log local speaker segmentation results
+        print("Local speaker segmentation results:")
+        for i, chunk in enumerate(chunk_results):
+            if chunk is not None:
+                print(f"\nChunk {i}:")
+                for turn, _, speaker in chunk['local_diarization'].itertracks(yield_label=True):
+                    print(f"  start={turn.start:.1f}s stop={turn.end:.1f}s {speaker}")
+
         # Combine results from all chunks
         all_embeddings = np.vstack([chunk['embeddings'] for chunk in chunk_results if chunk is not None])
         all_segmentations = np.vstack([chunk['segmentations'].data for chunk in chunk_results if chunk is not None])

@@ -6,7 +6,7 @@ pipeline = Pipeline.from_pretrained(
     use_auth_token="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")
 
 # Process multiple chunks
-chunk_files = ["./chunk3_extra.wav"]
+chunk_files = ["./chunk3_extra.wav", "./chunk1.wav"]
 chunk_results = [pipeline.process_chunk(file) for file in chunk_files]
 
 # Access local diarization for each chunk
