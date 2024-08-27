@@ -666,23 +666,32 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
                 initial_state=False,
             )
         
-        embeddings = self.get_embeddings(
-            file,
-            binarized_segmentations,
-            exclude_overlap=self.embedding_exclude_overlap,
-        )
-        
+        # estimate frame-level number of instantaneous speakers
         count = self.speaker_count(
             binarized_segmentations,
             self._segmentation.model.receptive_field,
             warm_up=(0.0, 0.0),
         )
         
+        # exit early when no speaker is ever active
+        if np.nanmax(count.data) == 0.0:
+            return None
+
+        embeddings = self.get_embeddings(
+            file,
+            binarized_segmentations,
+            exclude_overlap=self.embedding_exclude_overlap,
+        )
+        
+        # keep track of inactive speakers
+        inactive_speakers = np.sum(binarized_segmentations.data, axis=1) == 0
+        
         return {
             "segmentations": segmentations,
             "binarized_segmentations": binarized_segmentations,
             "embeddings": embeddings,
             "count": count,
+            "inactive_speakers": inactive_speakers,
             "file": file  # Include the file object for later use
         }
 
@@ -690,8 +699,8 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
         print("Performing global diarization")
 
         # Combine results from all chunks
-        all_embeddings = np.vstack([chunk['embeddings'] for chunk in chunk_results])
-        all_segmentations = np.vstack([chunk['segmentations'].data for chunk in chunk_results])
+        all_embeddings = np.vstack([chunk['embeddings'] for chunk in chunk_results if chunk is not None])
+        all_segmentations = np.vstack([chunk['segmentations'].data for chunk in chunk_results if chunk is not None])
         
         # Perform clustering
         num_speakers, min_speakers, max_speakers = self.set_num_speakers(
@@ -708,11 +717,32 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
             max_clusters=max_speakers,
         )
 
+        # number of detected clusters is the number of different speakers
+        num_different_speakers = np.max(hard_clusters) + 1
+
+        # detected number of speakers can still be out of bounds
+        if (num_different_speakers < min_speakers or num_different_speakers > max_speakers):
+            warnings.warn(
+                textwrap.dedent(
+                    f"""
+                    The detected number of speakers ({num_different_speakers}) is outside
+                    the given bounds [{min_speakers}, {max_speakers}]. This can happen if the
+                    given audio file is too short to contain {min_speakers} or more speakers.
+                    Try to lower the desired minimal number of speakers.
+                    """
+                )
+            )
+
         # Reconstruct diarization
         count = SlidingWindowFeature(
-            np.vstack([chunk['count'].data for chunk in chunk_results]),
+            np.vstack([chunk['count'].data for chunk in chunk_results if chunk is not None]),
             chunk_results[0]['count'].sliding_window
         )
+
+        # during counting, we could possibly overcount the number of instantaneous
+        # speakers due to segmentation errors, so we cap the maximum instantaneous number
+        # of speakers by the `max_speakers` value
+        count.data = np.minimum(count.data, max_speakers).astype(np.int8)
 
         discrete_diarization = self.reconstruct(
             SlidingWindowFeature(all_segmentations, chunk_results[0]['segmentations'].sliding_window),
@@ -730,8 +760,8 @@ class SpeakerDiarization(SpeakerDiarizationMixin, Pipeline):
 
         # Map speakers to labels
         mapping = {
-            label: expected_label
-            for label, expected_label in zip(diarization.labels(), self.classes())
+            label: f"SPEAKER_{label:02d}"
+            for label in diarization.labels()
         }
         diarization = diarization.rename_labels(mapping=mapping)
 
