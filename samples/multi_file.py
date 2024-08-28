@@ -146,7 +146,7 @@ def create_split_files(grouped_turns, chunk_index, audio_segment, chunk_duration
 
 
 # Process multiple chunks
-chunk_files = ["./overlapping.wav"]
+chunk_files = ["./chunk1.wav", "./chunk2.wav"]
 chunk_start_times = [0, 30]  # Adjusted to 30 seconds intervals
 processed_chunks = [prepare_30s_chunk(file) for file in chunk_files]
 chunk_results = [pipeline.process_chunk(temp_file) for temp_file, _ in processed_chunks]
@@ -181,9 +181,48 @@ global_diarization, centroids = pipeline.global_diarization(
 # Print the global diarization results
 print("\nGlobal diarization results:")
 for turn, _, speaker in global_diarization.itertracks(yield_label=True):
-    print(f"start={turn.start:.1f}s stop={turn.end:.1f}s {speaker}")
+    print(f"start={turn.start:.2f}s stop={turn.end:.2f}s speaker={speaker}")
 
-# Print speaker centroids
-print("\nSpeaker centroids:")
-for i, centroid in enumerate(centroids):
-    print(f"SPEAKER_{i:02d}: {centroid[:5]}...")  # Print first 5 values of each centroid
+
+# Group global diarization by chunks
+def group_global_diarization_by_chunks(global_diarization, chunk_duration=30):
+    grouped_diarization = {}
+    for turn, _, speaker in global_diarization.itertracks(yield_label=True):
+        chunk_index = int(turn.start // chunk_duration)
+        if chunk_index not in grouped_diarization:
+            grouped_diarization[chunk_index] = []
+        grouped_diarization[chunk_index].append({
+            'start': turn.start % chunk_duration,
+            'end': min(turn.end % chunk_duration, chunk_duration),
+            'speaker': speaker
+        })
+    return grouped_diarization
+
+# After performing global diarization
+grouped_global_diarization = group_global_diarization_by_chunks(global_diarization)
+
+# Update all_overviews with global speaker labels
+def find_most_overlapping_speaker(local_segment, global_segments):
+    max_overlap = 0
+    most_overlapping_speaker = None
+    local_start, local_end = local_segment['start_time'], local_segment['end_time']
+    
+    for global_segment in global_segments:
+        global_start, global_end = global_segment['start'], global_segment['end']
+        overlap = min(local_end, global_end) - max(local_start, global_start)
+        if overlap > max_overlap:
+            max_overlap = overlap
+            most_overlapping_speaker = global_segment['speaker']
+    
+    return most_overlapping_speaker
+
+for item in all_overviews:
+    chunk_index = item['chunk_index']
+    if chunk_index in grouped_global_diarization:
+        global_speaker = find_most_overlapping_speaker(item, grouped_global_diarization[chunk_index])
+        item['global_speaker'] = global_speaker
+
+# Print the updated overview
+print("\nUpdated overview with global speaker labels:")
+for item in all_overviews:
+    print(f"Chunk {item['chunk_index']}, Turn {item['turn_index']}, Local: {item['speaker']}, Global: {item.get('global_speaker', 'N/A')}: {item['start_time']:.2f}s - {item['end_time']:.2f}s, File: {item['file_name']}")
